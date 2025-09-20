@@ -1,0 +1,83 @@
+# === Python ===
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# === FastAPI / App Config ===
+.env
+.env.development
+.env.production
+*.db
+*.sqlite3
+instance/
+settings.pyc
+
+# === Virtual Envs ===
+venv/
+env/
+.venv/
+ENV/
+.Python
+
+# === IDEs ===
+.vscode/
+.idea/
+*.swp
+
+# === Pytest / Coverage ===
+.coverage
+.cache/
+.pytest_cache/
+htmlcov/
+
+# === Type checking / Lint ===
+.mypy_cache/
+.pyre/
+.pytype/
+.dmypy.json
+ruff_cache/
+
+# === Notebooks ===
+.ipynb_checkpoints/
+
+# === Logs ===
+*.log
+logs/
+
+# === Packaging ===
+*.manifest
+*.spec
+
+# === Node.js frontend (if fullstack) ===
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# === Docker ===
+*.pid
+*.bak
+docker-compose.override.yml
+__docker__/
+
+# === OS ===
+.DS_Store
+Thumbs.db
+
+# === Local tooling ===
+*.sqlite
+*.lock
+dump.rdb
+poetry.lock
+pipfile.lock
+
+# === VS Code ===
+.vscode/

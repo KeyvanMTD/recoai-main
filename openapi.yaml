@@ -1,0 +1,437 @@
+openapi: 3.0.3
+info:
+  title: HelloWorldFastAPI
+  version: "1.0.0"
+  description: FastAPI API for product recommendations, analytics, and user activity. Versioning via X-API-Version header.
+servers:
+  - url: http://localhost:8000
+paths:
+  /products/{product_id}/similar:
+    get:
+      summary: Get similar products for a given product_id
+      parameters:
+        - name: product_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: X-API-Version
+          in: header
+          required: false
+          description: API version (v1 or v2)
+          schema:
+            type: string
+            enum: [v1, v2]
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 10
+            minimum: 1
+            maximum: 50
+        - name: use_text_fallback
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: true
+        - name: use_llm_rerank
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: true
+        - name: include_rationale
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
+      responses:
+        '200':
+          description: Similar products
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  source_product_id:
+                    type: string
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        product_id:
+                          type: string
+                        score:
+                          type: number
+                          format: float
+                        rationale:
+                          type: string
+                          nullable: true
+                  count:
+                    type: integer
+  /products/{product_id}/complementary:
+    get:
+      summary: Get complementary products for a given product_id
+      parameters:
+        - name: product_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: X-API-Version
+          in: header
+          required: false
+          description: API version (v1 or v2)
+          schema:
+            type: string
+            enum: [v1, v2]
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 10
+            minimum: 1
+            maximum: 50
+        - name: use_text_fallback
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
+        - name: use_llm_rerank
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: true
+        - name: include_rationale
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
+      responses:
+        '200':
+          description: Complementary products
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  source_product_id:
+                    type: string
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        product_id:
+                          type: string
+                        score:
+                          type: number
+                          format: float
+                        rationale:
+                          type: string
+                          nullable: true
+                  count:
+                    type: integer
+  /products/{product_id}/x-sell:
+    get:
+      summary: Cross-sell recommendations for a product (co-purchase mining + optional rerank)
+      parameters:
+        - name: product_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: X-API-Version
+          in: header
+          required: false
+          description: API version (v1 or v2)
+          schema:
+            type: string
+            enum: [v1, v2]
+        - name: user_id
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 20
+            minimum: 1
+            maximum: 200
+        - name: brand
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: category_id
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: include_rationale
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
+        - name: use_llm_rerank
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: true
+        - name: exclude_already_in_cart
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: true
+        - name: exclude_already_purchased
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: true
+      responses:
+        '200':
+          description: Cross-sell recommendations
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  source_product_id:
+                    type: string
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        product_id:
+                          type: string
+                        score:
+                          type: number
+                          format: float
+                        rationale:
+                          type: string
+                          nullable: true
+                  count:
+                    type: integer
+  /top-sales:
+    get:
+      summary: Get top selling products
+      parameters:
+        - name: X-API-Version
+          in: header
+          required: false
+          description: API version (v1 or v2)
+          schema:
+            type: string
+            enum: [v1, v2]
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 20
+            minimum: 1
+            maximum: 200
+        - name: brand
+          in: query
+          required: false
+          schema:
+            type: array
+            items:
+              type: string
+          style: form
+          explode: true
+        - name: category_id
+          in: query
+          required: false
+          schema:
+            type: array
+            items:
+              type: string
+          style: form
+          explode: true
+      responses:
+        '200':
+          description: Top selling products
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        product_id:
+                          type: string
+                        units:
+                          type: integer
+                        orders:
+                          type: integer
+                  _meta:
+                    type: object
+  /users/{user_id}/last-seen-product:
+    get:
+      summary: List most recently seen products by user (unique)
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: X-API-Version
+          in: header
+          required: false
+          description: API version (v1 or v2)
+          schema:
+            type: string
+            enum: [v1, v2]
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 20
+            minimum: 1
+      responses:
+        '200':
+          description: Recently seen unique products
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        product_id:
+                          type: string
+                  count:
+                    type: integer
+  /products/vectorize:
+    post:
+      summary: Vectorize existing products in the 'products' collection
+      description: Generates embeddings for products for selected kinds (sim/comp) in batches.
+      parameters:
+        - name: X-API-Version
+          in: header
+          required: false
+          description: API version (v1 or v2)
+          schema:
+            type: string
+            enum: [v1, v2]
+        - name: force
+          in: query
+          required: false
+          description: Recompute even if cache/DB has vectors
+          schema:
+            type: boolean
+            default: false
+        - name: do_sim
+          in: query
+          required: false
+          description: Compute 'sim' vectors
+          schema:
+            type: boolean
+            default: true
+        - name: do_comp
+          in: query
+          required: false
+          description: Compute 'comp' vectors
+          schema:
+            type: boolean
+            default: true
+        - name: limit
+          in: query
+          required: false
+          description: Max number of products to process
+          schema:
+            type: integer
+            minimum: 1
+        - name: openai_batch_size
+          in: query
+          required: false
+          description: Max inputs per OpenAI call
+          schema:
+            type: integer
+            default: 64
+            minimum: 1
+            maximum: 2048
+        - name: scan_batch_size
+          in: query
+          required: false
+          description: DB scan and embedding batch size
+          schema:
+            type: integer
+            default: 500
+            minimum: 10
+            maximum: 5000
+      responses:
+        '200':
+          description: Vectorization job summary
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  version:
+                    type: string
+                  seen:
+                    type: integer
+                  processing_time_ms:
+                    type: number
+                    format: float
+                  stats_by_kind:
+                    type: object
+                    additionalProperties:
+                      type: object
+                      properties:
+                        cache_hits:
+                          type: integer
+                        db_hits:
+                          type: integer
+                        embedded:
+                          type: integer
+                        errors:
+                          type: array
+                          items:
+                            type: string
+                        missing_products:
+                          type: array
+                          items:
+                            type: string
+  /health:
+    get:
+      summary: Health check for dependencies
+      responses:
+        '200':
+          description: Service status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  checks:
+                    type: object
+                  timestamp:
+                    type: integer
