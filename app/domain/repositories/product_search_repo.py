@@ -1,31 +1,71 @@
 # app/domain/repositories/product_search_repo.py
-
 from __future__ import annotations
 from typing import Any, Dict, List, Optional
 from motor.motor_asyncio import AsyncIOMotorDatabase, AsyncIOMotorCollection
 
+
 class ProductSearchRepo:
     """
-    Repository for product search operations using MongoDB Atlas Search.
-    Provides both vector search (semantic) and text search (keyword-based) capabilities.
+    MongoDB Atlas Search: vector ($vectorSearch / knnBeta) + texte (fallback).
     """
 
-    # Name of the Atlas Vector Search index
     VECTOR_INDEX = "vector_index"
-
-    # Name of the Atlas Text Search index
     TEXT_INDEX = "text_index"
 
     def __init__(self, db: AsyncIOMotorDatabase, collection_name: str = "products"):
-        """
-        Initialize the repository with a MongoDB collection reference.
-
-        Args:
-            db: AsyncIOMotorDatabase connection (provided via FastAPI dependency).
-            collection_name: The MongoDB collection name containing product documents.
-        """
         self.col: AsyncIOMotorCollection = db[collection_name]
 
+    # ---------- Utils ----------
+    @staticmethod
+    def _to_mql(clause: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Convertit une clause style Atlas Search (equals/range/in/exists) en MQL pour $match/$vectorSearch.filter."""
+        if "equals" in clause:
+            eq = clause["equals"]
+            return {eq["path"]: eq.get("value")}
+        if "range" in clause:
+            r = clause["range"]
+            ops: Dict[str, Any] = {}
+            if "gt" in r: ops["$gt"] = r["gt"]
+            if "gte" in r: ops["$gte"] = r["gte"]
+            if "lt" in r: ops["$lt"] = r["lt"]
+            if "lte" in r: ops["$lte"] = r["lte"]
+            return {r["path"]: ops} if ops else None
+        if "in" in clause:
+            i = clause["in"]
+            vals = i.get("values") or i.get("value") or []
+            if not isinstance(vals, list):
+                vals = [vals]
+            return {i["path"]: {"$in": vals}}
+        if "exists" in clause:
+            ex = clause["exists"]
+            return {ex["path"]: {"$exists": bool(ex.get("value", True))}}
+        if "not" in clause and isinstance(clause["not"], dict):
+            inner = ProductSearchRepo._to_mql(next(iter(clause["not"].values())))
+            # conversion simple; adapter si besoin
+        return None
+
+    @staticmethod
+    def _mql_from_compound_filter(must_filters: Optional[Dict[str, Any]], exclude_product_id: Optional[str]) -> Optional[Dict[str, Any]]:
+        """Compose un $match MQL à partir d'un compound.filter potentiel + exclusion d'un product_id."""
+        mql_parts: List[Dict[str, Any]] = []
+
+        if must_filters:
+            comp = must_filters.get("compound")
+            if isinstance(comp, dict):
+                clauses = comp.get("filter") or []
+                for c in clauses:
+                    conv = ProductSearchRepo._to_mql(c)
+                    if conv:
+                        mql_parts.append(conv)
+
+        if exclude_product_id:
+            mql_parts.append({"product_id": {"$ne": exclude_product_id}})
+
+        if not mql_parts:
+            return None
+        return mql_parts[0] if len(mql_parts) == 1 else {"$and": mql_parts}
+
+    # ---------- Vector search ----------
     async def vector_search(
         self,
         query_vector: List[float],
@@ -36,71 +76,25 @@ class ProductSearchRepo:
         path: str = "vectors.sim.vector",
     ) -> List[Dict[str, Any]]:
         """
-        Perform a semantic search using Atlas Vector Search.
-
-        Args:
-            query_vector: Vector representation (embedding) of the search query.
-            limit: Maximum number of products to return.
-            num_candidates: Number of candidate documents considered before scoring.
-            exclude_product_id: Product ID to exclude from results (e.g., the source product).
-            must_filters: Additional MongoDB filter conditions.
-
-        Returns:
-            List of product documents with similarity scores, sorted by score.
+        Recherche sémantique via $vectorSearch. Filtre MQL appliqué après.
         """
-        # Convert Atlas Search-style compound filters to MQL for $vectorSearch.filter
-        def _to_mql(clause: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-            if "equals" in clause:
-                eq = clause["equals"]
-                return {eq["path"]: eq.get("value")}
-            if "range" in clause:
-                r = clause["range"]
-                ops: Dict[str, Any] = {}
-                if "gt" in r: ops["$gt"] = r["gt"]
-                if "gte" in r: ops["$gte"] = r["gte"]
-                if "lt" in r: ops["$lt"] = r["lt"]
-                if "lte" in r: ops["$lte"] = r["lte"]
-                return {r["path"]: ops} if ops else None
-            if "in" in clause:
-                i = clause["in"]
-                vals = i.get("values") or i.get("value") or []
-                if not isinstance(vals, list):
-                    vals = [vals]
-                return {i["path"]: {"$in": vals}}
-            if "exists" in clause:
-                ex = clause["exists"]
-                return {ex["path"]: {"$exists": bool(ex.get("value", True))}}
-            return None
+        mql_match = self._mql_from_compound_filter(must_filters, exclude_product_id)
 
-        filt: Optional[Dict[str, Any]] = None
-        if must_filters:
-            clauses = must_filters.get("compound", {}).get("filter", [])
-            mql = [c for c in (_to_mql(c) for c in clauses) if c]
-            if exclude_product_id:
-                mql.append({"product_id": {"$ne": exclude_product_id}})
-            if mql:
-                filt = mql[0] if len(mql) == 1 else {"$and": mql}
-        elif exclude_product_id:
-            filt = {"product_id": {"$ne": exclude_product_id}}
-
-        # Atlas Vector Search aggregation pipeline
-        pipeline = [
+        pipeline: List[Dict[str, Any]] = [
             {
                 "$vectorSearch": {
-                    "exact": False,
                     "index": self.VECTOR_INDEX,
-                    "path": path,  # e.g., "vectors.sim.vector"
+                    "path": path,
                     "queryVector": query_vector,
                     "numCandidates": num_candidates,
                     "limit": limit,
                 }
             }
         ]
-        # Apply MQL filter after vector stage to avoid index filter requirement
-        if filt:
-            pipeline.append({"$match": filt})
+        if mql_match:
+            pipeline.append({"$match": mql_match})
 
-        pipeline.extend([
+        pipeline += [
             {"$addFields": {"score": {"$meta": "vectorSearchScore"}}},
             {
                 "$project": {
@@ -111,14 +105,17 @@ class ProductSearchRepo:
                     "name": 1,
                     "description": 1,
                     "category_id": 1,
+                    "image_url": 1,
+                    "tags": 1,
+                    "metadata": 1,
                 }
             },
-        ])
+        ]
 
-        # Execute aggregation and return results as a list of dicts
         cursor = self.col.aggregate(pipeline)
         return [doc async for doc in cursor]
 
+    # ---------- Text fallback ----------
     async def text_search_fallback(
         self,
         query_text: str,
@@ -127,52 +124,38 @@ class ProductSearchRepo:
         must_filters: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
         """
-        Perform a traditional keyword-based search using Atlas Text Search.
-        Used as a fallback when vector search is unavailable or returns no results.
-
-        Args:
-            query_text: Text query to match against product fields.
-            limit: Maximum number of products to return.
-            exclude_product_id: Product ID to exclude from results.
-            must_filters: Additional MongoDB filter conditions.
-
-        Returns:
-            List of product documents with text search scores, sorted by score.
+        Recherche full-text via $search (index texte). **Ne jamais** mettre `filter: []`.
         """
-        # Build filter conditions
-        filt = must_filters or {}
-        if exclude_product_id:
-            filt = (
-                {"$and": [filt, {"product_id": {"$ne": exclude_product_id}}]}
-                if filt else {"product_id": {"$ne": exclude_product_id}}
-            )
+        # MQL pour exclusion et filtres simples après $search
+        mql_match = self._mql_from_compound_filter(must_filters, exclude_product_id)
 
-        # Atlas Text Search aggregation pipeline
-        pipeline = [
-            {
-                "$search": {
-                    "index": self.TEXT_INDEX,
-                    "compound": {
-                        "must": [
-                            {
-                                "text": {
-                                    "query": query_text,
-                                    "path": [
-                                        "name",
-                                        "description",
-                                        "brand",
-                                        "tags"
-                                    ]
-                                }
-                            }
-                        ],
-                        "filter": [filt] if filt else []
+        compound: Dict[str, Any] = {
+            "must": [
+                {
+                    "text": {
+                        "query": query_text,
+                        "path": ["name", "description", "brand", "tags"],
                     }
                 }
-            },
-            {"$addFields": {"score": {"$meta": "searchScore"}}},  # Attach text relevance score
+            ]
+        }
+        # Surtout ne pas ajouter "filter" si on n'a rien
+        if must_filters and isinstance(must_filters.get("compound"), dict):
+            comp = must_filters["compound"]
+            flt = comp.get("filter") or []
+            if flt:  # seulement si non vide
+                compound["filter"] = flt
+
+        pipeline: List[Dict[str, Any]] = [
+            {"$search": {"index": self.TEXT_INDEX, "compound": compound}}
+        ]
+        if mql_match:
+            pipeline.append({"$match": mql_match})
+
+        pipeline += [
+            {"$addFields": {"score": {"$meta": "searchScore"}}},
             {
-                "$project": {  # Control returned fields
+                "$project": {
                     "_id": 0,
                     "score": 1,
                     "product_id": 1,
@@ -188,103 +171,74 @@ class ProductSearchRepo:
                     "metadata": 1,
                 }
             },
-            {"$limit": limit}  # Ensure we return at most `limit` results
+            {"$limit": limit},
         ]
 
-        # Execute aggregation and return results as a list of dicts
         cursor = self.col.aggregate(pipeline)
         return [doc async for doc in cursor]
 
+    # ---------- Exécution générique (si tu l’utilises ailleurs) ----------
     async def execute_atlas_search(
         self,
         search_query: Dict[str, Any],
         limit: int = 10,
         exclude_product_id: Optional[str] = None,
         projection: Optional[Dict[str, Any]] = None,
-        mql_match: Optional[Dict[str, Any]] = None,  # <— add this
+        mql_match: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
         """
-        Execute a generic Atlas Search query with the provided search configuration.
-        Supports:
-          - $search with text/compound (incl. knnBeta)
-          - $vectorSearch stage (if vectorSearch operator is provided or detected nested)
+        Exécute un $search/$vectorSearch générique, en évitant `filter: []`.
         """
-        # Apply product ID exclusion if specified (only for $search-style filters)
+        # Ajoute exclusion product_id dans compound.filter si présent (et non vide ensuite)
         if exclude_product_id and "compound" in search_query:
-            if "filter" not in search_query["compound"]:
-                search_query["compound"]["filter"] = []
-            search_query["compound"]["filter"].append({
-                "not": {"equals": {"path": "product_id", "value": exclude_product_id}}
-            })
+            comp = search_query["compound"]
+            if "filter" not in comp:
+                comp["filter"] = []
+            comp["filter"].append({"not": {"equals": {"path": "product_id", "value": exclude_product_id}}})
+            if not comp["filter"]:
+                comp.pop("filter", None)
 
-        # Helper to find a nested operator dict by key
         def _find_op(d: Any, key: str) -> Optional[Dict[str, Any]]:
             if isinstance(d, dict):
                 if key in d and isinstance(d[key], dict):
                     return d[key]
                 for v in d.values():
-                    found = _find_op(v, key)
-                    if found:
-                        return found
+                    f = _find_op(v, key)
+                    if f:
+                        return f
             elif isinstance(d, list):
                 for it in d:
-                    found = _find_op(it, key)
-                    if found:
-                        return found
+                    f = _find_op(it, key)
+                    if f:
+                        return f
             return None
 
         pipeline: List[Dict[str, Any]] = []
-        score_field = "searchScore"
-
-        # 1) If a vectorSearch operator is present (even nested inside compound.must),
-        #    build a $vectorSearch stage instead of $search (vectorSearch is not valid inside $search).
         vs_cfg = _find_op(search_query, "vectorSearch")
         if vs_cfg:
-            # NOTE: $vectorSearch filter expects MQL, not Atlas Search compound filters.
-            # If search_query carried compound.filter, we ignore it here (or convert externally).
-            pipeline.append({
-                "$vectorSearch": {
-                    "index": self.VECTOR_INDEX,
-                    **vs_cfg,  # contains: path, queryVector, numCandidates, limit, (optional) filter (MQL)
-                }
-            })
-            score_field = "vectorSearchScore"
+            pipeline.append({"$vectorSearch": {"index": self.VECTOR_INDEX, **vs_cfg}})
         else:
-            # 2) If knnBeta is present, use $search with VECTOR_INDEX
             has_knn = _find_op(search_query, "knnBeta") is not None
             index_name = self.VECTOR_INDEX if has_knn else self.TEXT_INDEX
+            # Nettoyage: si compound.filter existe mais vide → on le retire
+            if "compound" in search_query:
+                comp = search_query["compound"]
+                if isinstance(comp, dict) and "filter" in comp and (not comp["filter"] or len(comp["filter"]) == 0):
+                    comp.pop("filter", None)
             pipeline.append({"$search": {"index": index_name, **search_query}})
-            score_field = "searchScore"
 
-        # Apply MQL filter AFTER $search (used with knnBeta on clusters without top-level filter)
         if mql_match:
             pipeline.append({"$match": mql_match})
 
-        pipeline.extend([
-            {"$addFields": {"score": {"$meta": "searchScore"}}},  # or "vectorSearchScore" if you switch
+        pipeline += [
+            {"$addFields": {"score": {"$meta": "searchScore"}}},
             {"$project": projection or {
-                "_id": 0,
-                "score": 1,
-                "product_id": 1,
-                "name": 1,
-                "brand": 1,
-                "current_price": 1,
-                "original_price": 1,
-                "currency": 1,
-                "category_id": 1,
-                "category_path": 1,
-                "image_url": 1,
-                "tags": 1,
-                "metadata": 1,
+                "_id": 0, "score": 1, "product_id": 1, "name": 1, "brand": 1,
+                "current_price": 1, "original_price": 1, "currency": 1,
+                "category_id": 1, "category_path": 1, "image_url": 1, "tags": 1, "metadata": 1,
             }},
             {"$limit": limit},
-        ])
+        ]
 
-        try:
-            cursor = self.col.aggregate(pipeline)
-            return [doc async for doc in cursor]
-        except Exception as e:
-            import logging
-            logger = logging.getLogger(__name__)
-            logger.error(f"Atlas Search error: {e}")
-            raise
+        cursor = self.col.aggregate(pipeline)
+        return [doc async for doc in cursor]
