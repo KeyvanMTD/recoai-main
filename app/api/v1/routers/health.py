@@ -54,11 +54,15 @@ async def health():
     except Exception as e:
         checks["redis"] = f"error: {e}"
 
-    # --- OpenAI: juste la présence de la clé
+      # --- OpenAI: juste la présence de la clé
     checks["openai_api_key_set"] = bool(settings.OPENAI_API_KEY)
 
-    # --- Status global ---
-    def _ok(v): return v in ("ok", "skipped") or isinstance(v, bool)
-    status = "ok" if all(_ok(v) for v in checks.values()) else "error"
+    # --- Status global : on ne considère *que* les checks de santé réels
+    def _is_ok(v): 
+        return v in ("ok", "skipped") or v is True
+
+    health_keys = ("mongodb", "redis", "openai_api_key_set")
+    status = "ok" if all(_is_ok(checks.get(k)) for k in health_keys) else "error"
 
     return {"status": status, "checks": checks, "timestamp": int(time.time())}
+
