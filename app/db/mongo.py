@@ -20,20 +20,41 @@ def get_db() -> AsyncIOMotorDatabase:
 
 
 async def connect():
-    """Create Motor client with explicit CA bundle (Render/containers need this)."""
+    """
+    Create Motor client with explicit CA bundle.
+    IMPORTANT: do not crash the app if the initial ping fails on Render.
+    Keep a lazy client so requests can retry once Atlas/network is OK.
+    """
     global _client, _db
-    _client = AsyncIOMotorClient(
-        settings.MONGO_URI,
-        tls=True,
-        tlsCAFile=certifi.where(),          # <- important for Atlas on Render
-        uuidRepresentation="standard",
-        serverSelectionTimeoutMS=8000,
-        connectTimeoutMS=8000,
-    )
-    _db = _client[settings.MONGO_DB]
-    # Fail fast if bad network/cert
-    await _client.admin.command("ping")
-    print("Mongo connected")
+
+    def _new_client() -> AsyncIOMotorClient:
+        return AsyncIOMotorClient(
+            settings.MONGO_URI,                 # e.g. mongodb+srv://.../...
+            tls=True,                           # SRV implies TLS but keep explicit
+            tlsCAFile=certifi.where(),          # critical on Render/containers
+            uuidRepresentation="standard",
+            serverSelectionTimeoutMS=6000,
+            connectTimeoutMS=6000,
+        )
+
+    try:
+        _client = _new_client()
+        _db = _client[settings.MONGO_DB]
+        # Soft fail-fast: try a ping, but don't abort on failure
+        await _client.admin.command("ping")
+        print("Mongo connected (ping ok)")
+    except Exception as e:
+        print(f"[WARN] Mongo ping at startup failed: {e}")
+        try:
+            # keep a lazy client; first real query will attempt to connect again
+            _client = _new_client()
+            _db = _client[settings.MONGO_DB]
+            print("[WARN] Mongo will attempt lazy connection on first query")
+        except Exception as e2:
+            # as a last resort, keep None; routes that need DB will assert
+            _client = None
+            _db = None
+            print(f"[ERROR] Mongo client init failed: {e2}")
 
 
 async def disconnect():
