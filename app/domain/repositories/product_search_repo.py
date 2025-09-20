@@ -39,13 +39,15 @@ class ProductSearchRepo:
         if "exists" in clause:
             ex = clause["exists"]
             return {ex["path"]: {"$exists": bool(ex.get("value", True))}}
-        if "not" in clause and isinstance(clause["not"], dict):
-            inner = ProductSearchRepo._to_mql(next(iter(clause["not"].values())))
-            # conversion simple; adapter si besoin
+        # NOTE: la conversion d'un "not" en MQL dépend du contenu interne et reste non triviale;
+        # on l'ignore ici car on ne l'utilise que côté $search (pas côté $vectorSearch.filter).
         return None
 
     @staticmethod
-    def _mql_from_compound_filter(must_filters: Optional[Dict[str, Any]], exclude_product_id: Optional[str]) -> Optional[Dict[str, Any]]:
+    def _mql_from_compound_filter(
+        must_filters: Optional[Dict[str, Any]],
+        exclude_product_id: Optional[str]
+    ) -> Optional[Dict[str, Any]]:
         """Compose un $match MQL à partir d'un compound.filter potentiel + exclusion d'un product_id."""
         mql_parts: List[Dict[str, Any]] = []
 
@@ -139,12 +141,18 @@ class ProductSearchRepo:
                 }
             ]
         }
-        # Surtout ne pas ajouter "filter" si on n'a rien
+        # Ajouter les filtres Atlas Search seulement s'ils existent et non vides
         if must_filters and isinstance(must_filters.get("compound"), dict):
             comp = must_filters["compound"]
             flt = comp.get("filter") or []
-            if flt:  # seulement si non vide
+            if flt:
                 compound["filter"] = flt
+
+        # Exclusion du produit source au format Atlas Search
+        if exclude_product_id:
+            compound.setdefault("filter", []).append({
+                "not": {"equals": {"path": "product_id", "value": exclude_product_id}}
+            })
 
         pipeline: List[Dict[str, Any]] = [
             {"$search": {"index": self.TEXT_INDEX, "compound": compound}}
@@ -177,7 +185,7 @@ class ProductSearchRepo:
         cursor = self.col.aggregate(pipeline)
         return [doc async for doc in cursor]
 
-    # ---------- Exécution générique (si tu l’utilises ailleurs) ----------
+    # ---------- Exécution générique ----------
     async def execute_atlas_search(
         self,
         search_query: Dict[str, Any],
@@ -189,12 +197,12 @@ class ProductSearchRepo:
         """
         Exécute un $search/$vectorSearch générique, en évitant `filter: []`.
         """
-        # Ajoute exclusion product_id dans compound.filter si présent (et non vide ensuite)
-        if exclude_product_id and "compound" in search_query:
+        # Ajoute exclusion product_id dans compound.filter si présent
+        if exclude_product_id and "compound" in search_query and isinstance(search_query["compound"], dict):
             comp = search_query["compound"]
-            if "filter" not in comp:
-                comp["filter"] = []
-            comp["filter"].append({"not": {"equals": {"path": "product_id", "value": exclude_product_id}}})
+            comp.setdefault("filter", []).append({
+                "not": {"equals": {"path": "product_id", "value": exclude_product_id}}
+            })
             if not comp["filter"]:
                 comp.pop("filter", None)
 
@@ -220,7 +228,7 @@ class ProductSearchRepo:
         else:
             has_knn = _find_op(search_query, "knnBeta") is not None
             index_name = self.VECTOR_INDEX if has_knn else self.TEXT_INDEX
-            # Nettoyage: si compound.filter existe mais vide → on le retire
+            # Nettoyage: `compound.filter` vide => on le retire
             if "compound" in search_query:
                 comp = search_query["compound"]
                 if isinstance(comp, dict) and "filter" in comp and (not comp["filter"] or len(comp["filter"]) == 0):
