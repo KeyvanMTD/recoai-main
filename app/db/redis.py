@@ -14,6 +14,7 @@ async def connect():
     global redis_client
     if not settings.REDIS_URL:
         print("⚠️ No REDIS_URL configured, skipping Redis connection.")
+        redis_client = None
         return
 
     try:
@@ -23,13 +24,11 @@ async def connect():
         print("✅ Redis connection successful")
     except Exception as e:
         print(f"⚠️ Failed to connect to Redis: {e}")
-        redis_client = None  # on désactive Redis mais l'app tourne
+        redis_client = None  # fallback: désactive Redis
 
 
 async def disconnect():
-    """
-    Ferme la connexion Redis si elle existe.
-    """
+    """Ferme la connexion Redis si elle existe."""
     global redis_client
     if redis_client:
         await redis_client.aclose()
